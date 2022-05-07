@@ -1,34 +1,31 @@
 #include <Arduino.h>
+#include <string>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 //sensor
-#include <Wire.h>
-#include <SPI.h>
+#include "bsec.h"
 #include <Adafruit_Sensor.h>
 #include "Adafruit_BME680.h"
 
-#define BME_SCK 18
-#define BME_MISO 19
-#define BME_MOSI 23
-#define BME_CS 5
+
+
 
 #define SEALEVELPRESSURE_HPA (1013.25)
 
-//Adafruit_BME680 bme; // I2C
-//Adafruit_BME680 bme(BME_CS); // hardware SPI
-Adafruit_BME680 bme(BME_CS, BME_MOSI, BME_MISO, BME_SCK);
-//endsensor
+// Create an object of the class Bsec
+Bsec iaqSensor;
 
-const char *SSI = "Flybox_2BC1";
+const char *SSI = "Ooredoo 4G_0A6BD0";
 //"ZTE""Flybox_2BC1";
-const char *PWD ="THmnFcnRTJHd";
+const char *PWD ="79903678";
 //"THmnFcnRTJHd"ytreza3210;
 
+int TEMP_MIN=0; //seuil min de température
+int TEMP_MAX=100; //seuil max de température
 
 
-
-
+//server certificat
 static const char *root_ca PROGMEM = R"EOF(
 -----BEGIN CERTIFICATE-----
 MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
@@ -66,13 +63,15 @@ emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
 
 //==========================================
 
-//MQTT clie
+//MQTT client
 WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
-const char* mqttServer = "036c07529d284e8a809ea7ca62593aa3.s2.eu.hivemq.cloud";
+const char* mqttServer ="036c07529d284e8a809ea7ca62593aa3.s2.eu.hivemq.cloud";// adresse de Broker hiveMQ
 
 int mqttPort = 8883;
-//
+
+
+//fonction pour connexion au wifi
 void connectToWiFi() {
   Serial.print("Connectiog to ");
   WiFi.mode(WIFI_STA);
@@ -87,14 +86,71 @@ void connectToWiFi() {
   Serial.println(WiFi.localIP());
   
 }
-void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Callback - ");
-  Serial.print("Message:");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
+void callback(char* topic, byte* payload, unsigned int length) { // fonction pour récupérer les messages du broker et faire le traitement demander
+  
+
+  const char* message = (char*)payload;
+  const String Topic = (char*)topic;
+  
+
+  if(Topic=="/actionneurs/chauffage"){//commande du chauffage
+    if(message[0] == 'T'){
+      Serial.println(message);
+      digitalWrite(2, HIGH);
+    
+    }
+    if(message[0] == 'F'){
+     digitalWrite(2, LOW);
+    }
   }
+  else if(Topic=="/actionneurs/ventilateur"){//commande du ventilateur
+
+    if(message[0] == 'T'){
+      digitalWrite(4, HIGH);
+    
+    }
+    if(message[0] == 'F'){
+     digitalWrite(4, LOW);
+    }
+    
+  }
+   else if(Topic=="/actionneurs/electroV"){ //commande de l'electrovanne
+
+    if(message[0] == 'T'){
+      digitalWrite(15, HIGH);
+    
+    }
+    if(message[0] == 'F'){
+     digitalWrite(15, LOW);
+    }
+    
+  }
+   else if(Topic=="/actionneurs/lampe"){// commande des lampes
+    if(message[0] == 'T'){
+      digitalWrite(12, HIGH);
+    
+    }
+    if(message[0] == 'F'){
+     digitalWrite(12, LOW);
+    }
+    
+  }
+  else if(Topic=="/seuils/temp_min"){ //configurer seuil min de température
+   Serial.println(message);
+   TEMP_MIN= atoi(message);
+   Serial.println(TEMP_MIN);
+    
+  }
+  else if(Topic=="/seuils/temp_max"){  //configurer seuil max de la température
+   Serial.println(message);
+   TEMP_MAX= atoi(message);
+   Serial.println(TEMP_MAX);
+    
+  }
+  else ;
+  
 }
-void setupMQTT() {
+void setupMQTT() { //configuration de client MQTT
   mqttClient.setServer(mqttServer, mqttPort);
   // set the callback function
   mqttClient.setCallback(callback);
@@ -102,6 +158,24 @@ void setupMQTT() {
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);
+  //setup bme sensor & bsec
+   Wire.begin();
+  iaqSensor.begin(UINT8_C(0x77), Wire);
+  Serial.println(iaqSensor.status);
+
+   bsec_virtual_sensor_t sensorList[7] = {
+    BSEC_OUTPUT_RAW_TEMPERATURE,
+    BSEC_OUTPUT_RAW_PRESSURE,
+    BSEC_OUTPUT_RAW_HUMIDITY,
+    BSEC_OUTPUT_RAW_GAS,
+    BSEC_OUTPUT_IAQ,
+    BSEC_OUTPUT_CO2_EQUIVALENT,
+    BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
+   
+  };
+  iaqSensor.updateSubscription(sensorList, 7, BSEC_SAMPLE_RATE_LP);
+
+  
   connectToWiFi();
 
    wifiClient.setCACert(root_ca);
@@ -110,29 +184,36 @@ void setup() {
    while (!Serial);
   Serial.println(F("BME680 async test"));
 
-  if (!bme.begin()) {
+  if (iaqSensor.status != BSEC_OK & iaqSensor.bme680Status != BME680_OK) {
     Serial.println(F("Could not find a valid BME680 sensor, check wiring!"));
     while (1);
   }
 
-  // Set up oversampling and filter initialization
-  bme.setTemperatureOversampling(BME680_OS_8X);
-  bme.setHumidityOversampling(BME680_OS_2X);
-  bme.setPressureOversampling(BME680_OS_4X);
-  bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
-  bme.setGasHeater(320, 150);
+
+
+
+
+//SETUP GPIO  pour le contrôle des actionneurs
+   pinMode(2, OUTPUT);
+   pinMode(4,OUTPUT);
+   pinMode(12, OUTPUT);
+   pinMode(15,OUTPUT);
 
 }
-void reconnect() {
+void reconnect() { //fonction pour connecter au broker
   Serial.println("Connecting to MQTT Broker...");
   while(!mqttClient.connected()){
   
       Serial.println("Reconnecting to MQTT Broker..");
       String clientId = "my-iot-device";
      
-      
-      if (mqttClient.connect(clientId.c_str(),"imededin","11965844123Aa") ){
+      //,"imededin","11965844123Aa") )
+      if (mqttClient.connect(clientId.c_str(),"imededin","xxxxxxxxxx"))
+      {
         Serial.println("Connected.");
+        mqttClient.subscribe("/actionneurs/+");
+        mqttClient.subscribe("/seuils/+");
+        
         // subscribe to topic
        
       }
@@ -140,74 +221,61 @@ void reconnect() {
   }
   
 }
+//paramètres climatiques
+float temp;
+float humidite;
+float pression;
+float co2;
+float IAQ;
+ float voc;
 
 void loop() {
   // put your main code here, to run repeatedly:
+ 
    if (!mqttClient.connected())
     reconnect();
-  
-  long now = millis();
-  long last_time=0;
- byte a=0x11; 
- byte b=0x12; 
- mqttClient.publish("/swa/tem","hello");
+  mqttClient.loop() ;
  
- byte ch[]={a,b};
- ////:::
- unsigned long endTime = bme.beginReading();
-  if (endTime == 0) {
-    Serial.println(F("Failed to begin reading :("));
-    return;
-  }
-  Serial.print(F("Reading started at "));
-  Serial.print(millis());
-  Serial.print(F(" and will finish at "));
-  Serial.println(endTime);
-
-  Serial.println(F("You can do other work during BME680 measurement."));
-  delay(50); // This represents parallel work.
-  // There's no need to delay() until millis() >= endTime: bme.endReading()
-  // takes care of that. It's okay for parallel work to take longer than
-  // BME680's measurement time.
-
-  // Obtain measurement results from BME680. Note that this operation isn't
-  // instantaneous even if milli() >= endTime due to I2C/SPI latency.
-  if (!bme.endReading()) {
-    Serial.println(F("Failed to complete reading :("));
-    return;
-  }
-  Serial.print(F("Reading completed at "));
-  Serial.println(millis());
-
-  Serial.print(F("Temperature = "));
-  float temp=bme.temperature;
-  Serial.print(bme.temperature);
-  Serial.println(F(" *C"));
-  
-
-  Serial.print(F("Pressure = "));
-  Serial.print(bme.pressure / 100.0);
-  Serial.println(F(" hPa"));
-
-  Serial.print(F("Humidity = "));
-  Serial.print(bme.humidity);
-  Serial.println(F(" %"));
-
-  Serial.print(F("Gas = "));
-  Serial.print(bme.gas_resistance / 1000.0);
-  Serial.println(F(" KOhms"));
-
-  Serial.print(F("Approx. Altitude = "));
-  Serial.print(bme.readAltitude(SEALEVELPRESSURE_HPA));
-  Serial.println(F(" m"));
-
-  Serial.println();
-  delay(2000);///
-   /////:::
-  mqttClient.publish("/swa/tem",String(temp).c_str(),2);
-  
  
-  delay(6000);
+if (iaqSensor.run()) { // If new data is available
+   //recuperation des valeurs 
+   Serial.print("temp");
+   temp = iaqSensor.rawTemperature;
+   Serial.println(temp);
+   pression=iaqSensor.pressure/100;
+   humidite=iaqSensor.humidity;
+   co2=iaqSensor.co2Equivalent;
+   voc=iaqSensor.breathVocEquivalent;
+   IAQ=iaqSensor.iaq;
+   //publish data to broker
+    mqttClient.publish("/paramètres/IAQ",String(IAQ).c_str());
+    mqttClient.publish("/paramètres/temp",String(temp).c_str());
+    mqttClient.publish("/paramètres/pression",String(pression).c_str());
+    mqttClient.publish("/paramètres/humidit",String(humidite).c_str());
+    mqttClient.publish("/paramètres/co2",String(co2).c_str());
+    mqttClient.publish("/paramètres/voc",String(voc).c_str());
+
+
+     //autocontrôle des actionneurs
+  if(temp>TEMP_MAX){
+    digitalWrite(2, LOW);//Désactiver chauffage
+    mqttClient.publish("/state/chauffage","False");//notification par le désactivation de chauffage
+    
+    digitalWrite(4, HIGH);//activer ventilateur
+    mqttClient.publish("/state/ventilateur","True");
+    
+  }
+  if(temp<TEMP_MIN){
+    digitalWrite(4, LOW);//Desactiver ventilateur
+     mqttClient.publish("/state/ventilateur","False");
   
+    
+    digitalWrite(2, HIGH);//activer chauffage
+     mqttClient.publish("/actionneurs/chauffage","True");
+    
+  }
+    
+};
+
 
   }
